@@ -1,0 +1,7 @@
+---
+baseDN: ou=users,dc=example,dc=com 
+scope: sub 
+derefAliases: never 
+timeout: 0 
+filter: (objectClass=person) 
+pageSize: 0

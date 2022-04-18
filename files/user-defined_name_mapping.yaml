@@ -1,0 +1,5 @@
+---
+groupUIDNameMapping:
+  "cn=group1,ou=groups,dc=example,dc=com": firstgroup
+  "cn=group2,ou=groups,dc=example,dc=com": secondgroup
+  "cn=group3,ou=groups,dc=example,dc=com": thirdgroup

@@ -1,0 +1,23 @@
+---
+# vars file for rfc2307_config.yaml
+
+
+
+
+# vars file for rfc2307_config.yaml
+# url: ldap://LDAP_SERVICE_IP:389
+# baseDN: "ou=groups,dc=example,dc=com"
+ldap_url: ldap://LDAP_SERVICE_IP:389
+ldap_insecure: false 
+ldap_baseDN: "ou=groups,dc=eses,dc=com"
+ldap_scope: sub
+ldap_derefAliases: never
+ldap_pageSize: 0
+ldap_groupUIDAttribute: dn 
+ldap_groupNameAttributes: [ cn ] 
+ldap_groupMembershipAttributes: [ member ] 
+ldap_usersQuery:
+ldap_userUIDAttribute: dn 
+ldap_userNameAttributes: [ mail ] 
+ldap_tolerateMemberNotFoundErrors: false
+ldap_tolerateMemberOutOfScopeErrors: false
