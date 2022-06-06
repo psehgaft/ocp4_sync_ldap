@@ -103,7 +103,7 @@ roleRef:
 $ oc create -f ldap-sync-cluster-role-binding.yaml
 ~~~
 
-9. Define a config map that specifies the sync configuration file: [estes-ldap-sync-config-map.yaml]
+9. Define a config map that specifies the sync configuration file: [ldap-sync-config-map.yaml]
 
 ~~~
 kind: ConfigMap
@@ -115,17 +115,15 @@ data:
   sync.yaml: |                                 
     kind: LDAPSyncConfig
     apiVersion: v1
-    url: ldaps://estesdca01.estes.us.dom:3269                  
+    url: ldaps://example.com:3269                  
     insecure: false
-    bindDN: OU=OCP4,OU=Linux,OU=Security
-      Groups,OU=Enterprise Production,DC=estes,DC=us,DC=domm         
+    bindDN: "DC=users,DC=example,DC=com"         
     bindPassword:
       file: "/etc/secrets/bindPassword"
     ca: /etc/ldap-ca/ca.crt
     rfc2307:                                   
       groupsQuery:
-        baseDN: "OU=OCP4,OU=Linux,OU=Security
-      Groups,OU=Enterprise Production,DC=estes,DC=us,DC=domm"  
+        baseDN: "DC=users,DC=example,DC=com"  
         scope: sub
         filter: "(objectClass=groupOfMembers)"
         derefAliases: never
@@ -134,8 +132,7 @@ data:
       groupNameAttributes: [ cn ]
       groupMembershipAttributes: [ member ]
       usersQuery:
-        baseDN: "OU=OCP4,OU=Linux,OU=Security
-      Groups,OU=Enterprise Production,DC=estes,DC=us,DC=domm"   
+        baseDN: "DC=users,DC=example,DC=com"   
         scope: sub
         derefAliases: never
         pageSize: 0
@@ -145,7 +142,7 @@ data:
       tolerateMemberOutOfScopeErrors: false
 ~~~
 
-- 1. 	Define the sync configuration file.
+- 1. Define the sync configuration file.
 - 2. Specify the URL.
 - 3. Specify the bindDN.
 - 4. This example uses the RFC2307 schema; adjust values as necessary. You can also use a different schema.
