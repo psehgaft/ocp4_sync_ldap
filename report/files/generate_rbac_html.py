@@ -4,7 +4,8 @@ import argparse, collections, datetime as dt, html, json, os
 from pathlib import Path
 from typing import Any
 
-GENERATOR_VERSION = "1.1.0"
+GENERATOR_VERSION = "1.2.0"
+NULL_RULES_FIX = "rules_of() normalizer; never iterate over rules directly"
 RISK_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "NONE": 0}
 READ = {"get", "list", "watch"}
 WRITE = {"create", "update", "patch", "delete", "deletecollection"}
@@ -58,6 +59,7 @@ def csv(values: Any) -> str:
 
 
 def rule_normalize(rule: Any) -> dict[str, list[str]]:
+    """Normalize one Kubernetes PolicyRule, including nullable members."""
     rule_dict = safe_dict(rule)
     return {
         "apiGroups": [str(x) for x in safe_list(rule_dict.get("apiGroups"))],
@@ -66,6 +68,32 @@ def rule_normalize(rule: Any) -> dict[str, list[str]]:
         "verbs": [str(x) for x in safe_list(rule_dict.get("verbs"))],
         "nonResourceURLs": [str(x) for x in safe_list(rule_dict.get("nonResourceURLs"))],
     }
+
+
+def rules_of(obj: Any) -> list[dict[str, list[str]]]:
+    """
+    Return normalized PolicyRules for a Role or ClusterRole.
+
+    OpenShift/Kubernetes objects can legally or transiently contain:
+      rules: null
+
+    They can also omit the rules key completely. Both cases are normalized
+    to an empty list. Non-dictionary rule entries are ignored safely.
+    """
+    object_dict = safe_dict(obj)
+    raw_rules = object_dict.get("rules")
+
+    if raw_rules is None:
+        return []
+
+    if not isinstance(raw_rules, list):
+        return []
+
+    return [
+        rule_normalize(rule)
+        for rule in raw_rules
+        if isinstance(rule, dict)
+    ]
 
 
 def risk(rule: dict[str, list[str]], role: str = "") -> tuple[str, str]:
@@ -124,9 +152,44 @@ def table(section_id: str, title: str, columns: list[tuple[str, str]], rows: lis
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input-dir", type=Path, required=True)
-    ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument("--input-dir", type=Path)
+    ap.add_argument("--output", type=Path)
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Validate nullable Role/ClusterRole handling and exit.",
+    )
     args = ap.parse_args()
+
+    if args.self_test:
+        test_objects = [
+            {"metadata": {"name": "null-rules"}, "rules": None},
+            {"metadata": {"name": "missing-rules"}},
+            {"metadata": {"name": "invalid-rules"}, "rules": "not-a-list"},
+            {
+                "metadata": {"name": "valid-rules"},
+                "rules": [
+                    {
+                        "apiGroups": [""],
+                        "resources": ["pods"],
+                        "verbs": ["get", "list"],
+                    }
+                ],
+            },
+        ]
+        expected_lengths = [0, 0, 0, 1]
+        actual_lengths = [len(rules_of(obj)) for obj in test_objects]
+        if actual_lengths != expected_lengths:
+            raise RuntimeError(
+                f"Self-test failed: expected {expected_lengths}, got {actual_lengths}"
+            )
+        print(f"Generator version: {GENERATOR_VERSION}")
+        print("Self-test passed: nullable and malformed rules are handled safely.")
+        return 0
+
+    if args.input_dir is None or args.output is None:
+        ap.error("--input-dir and --output are required unless --self-test is used")
+
     d = args.input_dir
 
     metadata = safe_dict(load(d / "metadata.json"))
@@ -137,13 +200,16 @@ def main() -> int:
     crs, crbs = as_items(load(d / "clusterroles.json")), as_items(load(d / "clusterrolebindings.json"))
     sccs = as_items(load(d / "sccs.json"))
 
+    # Null-safe Role and ClusterRole indexes.
+    # Never iterate over obj.get("rules", []) directly because an explicit
+    # JSON null is returned as Python None.
     role_index = {
-        (ns(x), name(x)): [rule_normalize(r) for r in safe_list(x.get("rules"))]
-        for x in roles
+        (ns(role_obj), name(role_obj)): rules_of(role_obj)
+        for role_obj in roles
     }
     cr_index = {
-        name(x): [rule_normalize(r) for r in safe_list(x.get("rules"))]
-        for x in crs
+        name(cluster_role_obj): rules_of(cluster_role_obj)
+        for cluster_role_obj in crs
     }
     group_users, user_groups = {}, collections.defaultdict(list)
     for g in groups:
