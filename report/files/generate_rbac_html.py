@@ -4,6 +4,7 @@ import argparse, collections, datetime as dt, html, json, os
 from pathlib import Path
 from typing import Any
 
+GENERATOR_VERSION = "1.1.0"
 RISK_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "NONE": 0}
 READ = {"get", "list", "watch"}
 WRITE = {"create", "update", "patch", "delete", "deletecollection"}
@@ -22,12 +23,22 @@ def as_items(obj: Any) -> list[dict[str, Any]]:
     return [obj] if isinstance(obj, dict) and obj else []
 
 
+def safe_dict(value: Any) -> dict[str, Any]:
+    """Return a dictionary or an empty dictionary for null/unexpected values."""
+    return value if isinstance(value, dict) else {}
+
+
+def safe_list(value: Any) -> list[Any]:
+    """Return a list or an empty list for null/unexpected values."""
+    return value if isinstance(value, list) else []
+
+
 def name(obj: dict[str, Any]) -> str:
-    return str(obj.get("metadata", {}).get("name", ""))
+    return str(safe_dict(obj.get("metadata")).get("name") or "")
 
 
 def ns(obj: dict[str, Any]) -> str:
-    return str(obj.get("metadata", {}).get("namespace", ""))
+    return str(safe_dict(obj.get("metadata")).get("namespace") or "")
 
 
 def esc(v: Any) -> str:
@@ -35,16 +46,25 @@ def esc(v: Any) -> str:
 
 
 def csv(values: Any) -> str:
-    return ", ".join(str(x) for x in (values or []) if x is not None and str(x) != "")
+    if values is None:
+        return ""
+    if isinstance(values, (str, int, float, bool)):
+        return str(values)
+    return ", ".join(
+        str(x)
+        for x in safe_list(values)
+        if x is not None and str(x) != ""
+    )
 
 
-def rule_normalize(rule: dict[str, Any]) -> dict[str, list[str]]:
+def rule_normalize(rule: Any) -> dict[str, list[str]]:
+    rule_dict = safe_dict(rule)
     return {
-        "apiGroups": list(rule.get("apiGroups") or []),
-        "resources": list(rule.get("resources") or []),
-        "resourceNames": list(rule.get("resourceNames") or []),
-        "verbs": list(rule.get("verbs") or []),
-        "nonResourceURLs": list(rule.get("nonResourceURLs") or []),
+        "apiGroups": [str(x) for x in safe_list(rule_dict.get("apiGroups"))],
+        "resources": [str(x) for x in safe_list(rule_dict.get("resources"))],
+        "resourceNames": [str(x) for x in safe_list(rule_dict.get("resourceNames"))],
+        "verbs": [str(x) for x in safe_list(rule_dict.get("verbs"))],
+        "nonResourceURLs": [str(x) for x in safe_list(rule_dict.get("nonResourceURLs"))],
     }
 
 
@@ -109,7 +129,7 @@ def main() -> int:
     args = ap.parse_args()
     d = args.input_dir
 
-    metadata = load(d / "metadata.json")
+    metadata = safe_dict(load(d / "metadata.json"))
     cvs, oauths, auths = as_items(load(d / "clusterversion.json")), as_items(load(d / "oauth.json")), as_items(load(d / "authentication.json"))
     identities, users, groups = as_items(load(d / "identities.json")), as_items(load(d / "users.json")), as_items(load(d / "groups.json"))
     sas, namespaces = as_items(load(d / "serviceaccounts.json")), as_items(load(d / "namespaces.json"))
@@ -117,16 +137,22 @@ def main() -> int:
     crs, crbs = as_items(load(d / "clusterroles.json")), as_items(load(d / "clusterrolebindings.json"))
     sccs = as_items(load(d / "sccs.json"))
 
-    role_index = {(ns(x), name(x)): [rule_normalize(r) for r in x.get("rules", [])] for x in roles}
-    cr_index = {name(x): [rule_normalize(r) for r in x.get("rules", [])] for x in crs}
+    role_index = {
+        (ns(x), name(x)): [rule_normalize(r) for r in safe_list(x.get("rules"))]
+        for x in roles
+    }
+    cr_index = {
+        name(x): [rule_normalize(r) for r in safe_list(x.get("rules"))]
+        for x in crs
+    }
     group_users, user_groups = {}, collections.defaultdict(list)
     for g in groups:
-        group_users[name(g)] = list(g.get("users") or [])
+        group_users[name(g)] = [str(x) for x in safe_list(g.get("users"))]
         for u in group_users[name(g)]: user_groups[str(u)].append(name(g))
 
     identity_rows, idp_counts, identity_by_user = [], collections.Counter(), collections.defaultdict(list)
     for i in identities:
-        iname = name(i); provider = str(i.get("providerName") or iname.split(":",1)[0] or "unknown"); u = str((i.get("user") or {}).get("name") or "")
+        iname = name(i); provider = str(i.get("providerName") or iname.split(":",1)[0] or "unknown"); u = str(safe_dict(i.get("user")).get("name") or "")
         idp_counts[provider] += 1
         if u: identity_by_user[u].append(iname)
         identity_rows.append({"identity": iname, "provider": provider, "provider_user": i.get("providerUserName", ""), "user": u})
@@ -136,11 +162,12 @@ def main() -> int:
     for u in users:
         uname = name(u)
         user_rows.append({"user": uname, "full_name": u.get("fullName", ""), "identities": csv(u.get("identities") or identity_by_user.get(uname)), "groups": csv(sorted(user_groups.get(uname, []))), "group_count": len(user_groups.get(uname, []))})
-    group_rows = [{"group": name(g), "user_count": len(g.get("users") or []), "users": csv(g.get("users"))} for g in groups]
+    group_rows = [{"group": name(g), "user_count": len(safe_list(g.get("users"))), "users": csv(g.get("users"))} for g in groups]
 
     oauth_rows = []
     for o in oauths:
-        for p in (o.get("spec") or {}).get("identityProviders", []) or []:
+        for p in safe_list(safe_dict(o.get("spec")).get("identityProviders")):
+            p = safe_dict(p)
             oauth_rows.append({"name": p.get("name", ""), "type": p.get("type", ""), "mapping": p.get("mappingMethod", "")})
 
     assignments, bound_rules = [], []
@@ -149,7 +176,7 @@ def main() -> int:
     external_groups = set()
     for scope, bindings in (("Cluster", crbs), ("Namespace", rbs)):
         for b in bindings:
-            bns = "" if scope == "Cluster" else ns(b); bref = b.get("roleRef") or {}; rkind, rname = str(bref.get("kind", "")), str(bref.get("name", ""))
+            bns = "" if scope == "Cluster" else ns(b); bref = safe_dict(b.get("roleRef")); rkind, rname = str(bref.get("kind") or ""), str(bref.get("name") or "")
             rr = role_index.get((bns, rname), []) if rkind == "Role" else cr_index.get(rname, [])
             levels, reasons, verbs_u, resources_u, api_u = [], [], set(), set(), set()
             for idx, r in enumerate(rr, 1):
@@ -158,8 +185,9 @@ def main() -> int:
                 bound_rules.append({"scope": scope, "namespace": bns, "binding": name(b), "role_kind": rkind, "role": rname, "rule": idx, "api_groups": csv(r["apiGroups"]), "resources": csv(r["resources"]), "resource_names": csv(r["resourceNames"]), "verbs": csv(r["verbs"]), "non_resource_urls": csv(r["nonResourceURLs"]), "risk": lev, "reason": why})
             if not rr: levels, reasons = ["NONE"], ["Role not collected or has no rules"]
             br = maxrisk(levels)
-            for s in b.get("subjects") or []:
-                sk, sn, sns = str(s.get("kind", "")), str(s.get("name", "")), str(s.get("namespace", ""))
+            for s in safe_list(b.get("subjects")):
+                s = safe_dict(s)
+                sk, sn, sns = str(s.get("kind") or ""), str(s.get("name") or ""), str(s.get("namespace") or "")
                 subject_counts[sk] += 1; scope_counts[scope] += 1; risk_counts[br] += 1
                 if sk == "Group" and sn not in known_groups: external_groups.add(sn)
                 assignments.append({"scope": scope, "namespace": bns, "binding": name(b), "role_kind": rkind, "role": rname, "subject_kind": sk, "subject_namespace": sns, "subject": sn, "api_groups": csv(sorted(api_u)), "resources": csv(sorted(resources_u)), "verbs": csv(sorted(verbs_u)), "risk": br, "reason": csv(sorted(set(reasons)))})
@@ -201,8 +229,8 @@ def main() -> int:
     scc_rows, scc_assign = [], []
     scc_names = {name(x) for x in sccs}
     for s in sccs:
-        sname = name(s); direct_users = list(s.get("users") or []); direct_groups = list(s.get("groups") or [])
-        scc_rows.append({"scc": sname, "priority": s.get("priority", ""), "privileged": s.get("allowPrivilegedContainer", False), "host_network": s.get("allowHostNetwork", False), "host_pid": s.get("allowHostPID", False), "host_ipc": s.get("allowHostIPC", False), "host_ports": s.get("allowHostPorts", False), "read_only_rootfs": s.get("readOnlyRootFilesystem", False), "run_as_user": (s.get("runAsUser") or {}).get("type", ""), "selinux": (s.get("seLinuxContext") or {}).get("type", ""), "volumes": csv(s.get("volumes")), "allowed_capabilities": csv(s.get("allowedCapabilities")), "drop_capabilities": csv(s.get("requiredDropCapabilities")), "direct_users": csv(direct_users), "direct_groups": csv(direct_groups)})
+        sname = name(s); direct_users = [str(x) for x in safe_list(s.get("users"))]; direct_groups = [str(x) for x in safe_list(s.get("groups"))]
+        scc_rows.append({"scc": sname, "priority": s.get("priority", ""), "privileged": s.get("allowPrivilegedContainer", False), "host_network": s.get("allowHostNetwork", False), "host_pid": s.get("allowHostPID", False), "host_ipc": s.get("allowHostIPC", False), "host_ports": s.get("allowHostPorts", False), "read_only_rootfs": s.get("readOnlyRootFilesystem", False), "run_as_user": safe_dict(s.get("runAsUser")).get("type", ""), "selinux": safe_dict(s.get("seLinuxContext")).get("type", ""), "volumes": csv(s.get("volumes")), "allowed_capabilities": csv(s.get("allowedCapabilities")), "drop_capabilities": csv(s.get("requiredDropCapabilities")), "direct_users": csv(direct_users), "direct_groups": csv(direct_groups)})
         for x in direct_users: scc_assign.append({"scc": sname, "source": "Direct SCC user", "scope": "Cluster", "namespace": "", "subject_kind": "User/ServiceAccount", "subject": x, "binding": "", "role": ""})
         for x in direct_groups: scc_assign.append({"scc": sname, "source": "Direct SCC group", "scope": "Cluster", "namespace": "", "subject_kind": "Group", "subject": x, "binding": "", "role": ""})
     for a in assignments:
@@ -214,13 +242,27 @@ def main() -> int:
                     scc_assign.append({"scc": target, "source": "RBAC use verb", "scope": a["scope"], "namespace": a["namespace"], "subject_kind": a["subject_kind"], "subject": subject, "binding": a["binding"], "role": a["role"]})
 
     warnings = []
+    for role_obj in roles:
+        if "rules" in role_obj and role_obj.get("rules") is None:
+            warnings.append({
+                "category": "Data normalization",
+                "item": f"Role/{ns(role_obj)}/{name(role_obj)}",
+                "message": "The API returned rules: null; the report treated it as an empty rule list."
+            })
+    for role_obj in crs:
+        if "rules" in role_obj and role_obj.get("rules") is None:
+            warnings.append({
+                "category": "Data normalization",
+                "item": f"ClusterRole/{name(role_obj)}",
+                "message": "The API returned rules: null; the report treated it as an empty rule list."
+            })
     for p in sorted(d.glob("*.error")):
         text = p.read_text(encoding="utf-8", errors="replace").strip()
         if text: warnings.append({"category": "Collection", "item": p.name, "message": text})
     for g in sorted(external_groups): warnings.append({"category": "External/unsynchronized group", "item": g, "message": "Referenced by RBAC, but no matching OpenShift Group object was collected; user membership cannot be expanded."})
 
-    cv = cvs[0] if cvs else {}; version = str((cv.get("status") or {}).get("desired", {}).get("version", "")); cluster_id = str((cv.get("spec") or {}).get("clusterID", ""))
-    auth_type = str(((auths[0].get("spec") if auths else {}) or {}).get("type", ""))
+    cv = cvs[0] if cvs else {}; version = str(safe_dict(safe_dict(cv.get("status")).get("desired")).get("version") or ""); cluster_id = str(safe_dict(cv.get("spec")).get("clusterID") or "")
+    auth_type = str(safe_dict(auths[0].get("spec") if auths else {}).get("type") or "")
     cards = [("Users",len(users)),("Identities",len(identities)),("Groups",len(groups)),("ServiceAccounts",len(sas)),("Roles",len(roles)),("ClusterRoles",len(crs)),("RoleBindings",len(rbs)),("ClusterRoleBindings",len(crbs)),("SCCs",len(sccs)),("Namespaces",len(namespaces))]
     charts = [chart("Identities by provider", idp_counts), chart("Users per group", {x["group"]:x["user_count"] for x in group_rows}), chart("RBAC subjects", subject_counts), chart("Cluster vs namespace scope", scope_counts), chart("Assignment risk", risk_counts), chart("Verb frequency", verb_counts), chart("ServiceAccount binding state", {"Bound":bound_sa,"Unbound":max(0,len(sas)-bound_sa)}), chart("SCC assignment records", collections.Counter(x["scc"] for x in scc_assign))]
 
@@ -249,6 +291,7 @@ function filterRows(){{let g=document.getElementById('global').value.toLowerCase
 </script></body></html>'''
     args.output.parent.mkdir(parents=True, exist_ok=True); args.output.write_text(doc, encoding="utf-8"); os.chmod(args.output, 0o600)
     print(f"Generated: {args.output}")
+    print(f"Generator version: {GENERATOR_VERSION}")
     print(json.dumps({"users":len(users),"identities":len(identities),"groups":len(groups),"serviceAccounts":len(sas),"assignments":len(assignments),"roles":len(roles)+len(crs),"sccs":len(sccs),"warnings":len(warnings)}, sort_keys=True))
     return 0
 
