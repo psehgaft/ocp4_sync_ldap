@@ -29,12 +29,12 @@
       - { label: SCCs, filename: sccs.json, argv: [get, securitycontextconstraints.security.openshift.io] }
 
   tasks:
-    - name: Validate local commands
-      ansible.builtin.command:
-        argv: [/usr/bin/env, "{{ item }}", --version]
-      loop: [oc, python3]
-      register: command_check
-      changed_when: false
+#    - name: Validate local commands
+#      ansible.builtin.command:
+#        argv: [/usr/bin/env, "{{ item }}", --version]
+#      loop: [oc, python3]
+#      register: command_check
+#      changed_when: false
 
     - name: Validate OpenShift authentication
       ansible.builtin.command:
