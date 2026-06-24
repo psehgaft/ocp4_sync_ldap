@@ -1,0 +1,34 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openshift-rbac-report-reader
+rules:
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings, clusterroles, clusterrolebindings]
+    verbs: [get, list, watch]
+  - apiGroups: [user.openshift.io]
+    resources: [users, identities, groups]
+    verbs: [get, list, watch]
+  - apiGroups: [security.openshift.io]
+    resources: [securitycontextconstraints]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [namespaces, serviceaccounts]
+    verbs: [get, list, watch]
+  - apiGroups: [config.openshift.io]
+    resources: [clusterversions, authentications, oauths]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openshift-rbac-report-readers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openshift-rbac-report-reader
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: openshift-rbac-report-readers

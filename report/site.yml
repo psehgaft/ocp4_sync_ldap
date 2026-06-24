@@ -1,0 +1,126 @@
+---
+- name: Generate a deep OpenShift RBAC HTML report
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    kubeconfig_path: "{{ lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') ~ '/.kube/config', true) }}"
+    output_root: "{{ playbook_dir }}/output"
+    run_id: "{{ ansible_date_time.iso8601_basic_short }}"
+    report_directory: "{{ output_root }}/rbac-report-{{ run_id }}"
+    evidence_directory: "{{ report_directory }}/evidence"
+    report_file: "{{ report_directory }}/openshift-rbac-report.html"
+    python_executable: "{{ ansible_playbook_python }}"
+
+    oc_collections:
+      - { label: ClusterVersion, filename: clusterversion.json, argv: [get, clusterversion.config.openshift.io, version] }
+      - { label: OAuth, filename: oauth.json, argv: [get, oauth.config.openshift.io, cluster] }
+      - { label: Authentication, filename: authentication.json, argv: [get, authentication.config.openshift.io, cluster] }
+      - { label: Identities, filename: identities.json, argv: [get, identities.user.openshift.io] }
+      - { label: Users, filename: users.json, argv: [get, users.user.openshift.io] }
+      - { label: Groups, filename: groups.json, argv: [get, groups.user.openshift.io] }
+      - { label: ServiceAccounts, filename: serviceaccounts.json, argv: [get, serviceaccounts, --all-namespaces] }
+      - { label: Namespaces, filename: namespaces.json, argv: [get, namespaces] }
+      - { label: Roles, filename: roles.json, argv: [get, roles.rbac.authorization.k8s.io, --all-namespaces] }
+      - { label: RoleBindings, filename: rolebindings.json, argv: [get, rolebindings.rbac.authorization.k8s.io, --all-namespaces] }
+      - { label: ClusterRoles, filename: clusterroles.json, argv: [get, clusterroles.rbac.authorization.k8s.io] }
+      - { label: ClusterRoleBindings, filename: clusterrolebindings.json, argv: [get, clusterrolebindings.rbac.authorization.k8s.io] }
+      - { label: SCCs, filename: sccs.json, argv: [get, securitycontextconstraints.security.openshift.io] }
+
+  tasks:
+    - name: Validate local commands
+      ansible.builtin.command:
+        argv: [/usr/bin/env, "{{ item }}", --version]
+      loop: [oc, python3]
+      register: command_check
+      changed_when: false
+
+    - name: Validate OpenShift authentication
+      ansible.builtin.command:
+        argv: [oc, "--kubeconfig={{ kubeconfig_path }}", whoami]
+      register: oc_whoami
+      changed_when: false
+
+    - name: Obtain OpenShift API endpoint
+      ansible.builtin.command:
+        argv: [oc, "--kubeconfig={{ kubeconfig_path }}", whoami, --show-server]
+      register: oc_server
+      changed_when: false
+
+    - name: Create report directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ output_root }}"
+        - "{{ report_directory }}"
+        - "{{ evidence_directory }}"
+
+    - name: Collect OpenShift authorization resources
+      ansible.builtin.command:
+        argv: "{{ ['oc', '--kubeconfig=' ~ kubeconfig_path] + item.argv + ['-o', 'json'] }}"
+      loop: "{{ oc_collections }}"
+      loop_control:
+        label: "{{ item.label }}"
+      register: collected_resources
+      changed_when: false
+      failed_when: false
+
+    - name: Save JSON evidence
+      ansible.builtin.copy:
+        content: "{{ item.stdout if item.rc == 0 and (item.stdout | trim | length) > 0 else '{\"apiVersion\":\"v1\",\"kind\":\"List\",\"items\":[]}' }}"
+        dest: "{{ evidence_directory }}/{{ item.item.filename }}"
+        mode: "0600"
+      loop: "{{ collected_resources.results }}"
+      loop_control:
+        label: "{{ item.item.filename }}"
+
+    - name: Save collection errors
+      ansible.builtin.copy:
+        content: "{{ item.stderr | default('') }}"
+        dest: "{{ evidence_directory }}/{{ item.item.filename }}.error"
+        mode: "0600"
+      loop: "{{ collected_resources.results }}"
+      loop_control:
+        label: "{{ item.item.filename }}.error"
+
+    - name: Save collection metadata
+      ansible.builtin.copy:
+        content: |
+          {
+            "collector": {{ oc_whoami.stdout | trim | to_json }},
+            "apiServer": {{ oc_server.stdout | trim | to_json }},
+            "collectedAt": {{ ansible_date_time.iso8601 | to_json }},
+            "kubeconfigPath": {{ kubeconfig_path | to_json }},
+            "ansibleVersion": {{ ansible_version.full | to_json }}
+          }
+        dest: "{{ evidence_directory }}/metadata.json"
+        mode: "0600"
+
+    - name: Generate standalone HTML report
+      ansible.builtin.command:
+        argv:
+          - "{{ python_executable }}"
+          - "{{ playbook_dir }}/files/generate_rbac_html.py"
+          - --input-dir
+          - "{{ evidence_directory }}"
+          - --output
+          - "{{ report_file }}"
+      register: report_generation
+      changed_when: true
+
+    - name: Protect generated report
+      ansible.builtin.file:
+        path: "{{ report_file }}"
+        mode: "0600"
+
+    - name: Display result
+      ansible.builtin.debug:
+        msg:
+          - "Collector: {{ oc_whoami.stdout | trim }}"
+          - "API: {{ oc_server.stdout | trim }}"
+          - "HTML report: {{ report_file }}"
+          - "Evidence: {{ evidence_directory }}"
+          - "{{ report_generation.stdout | trim }}"
